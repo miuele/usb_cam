@@ -88,6 +88,31 @@ void UsbCam::process_image(const char * src, char * & dest, const int & bytes_us
   }
 }
 
+// taken from: https://www.gnu.org/software/libc/manual/html_node/Calculating-Elapsed-Time.html
+int
+timeval_subtract (struct timeval *result, struct timeval *x, struct timeval *y)
+{
+  /* Perform the carry for the later subtraction by updating y. */
+  if (x->tv_usec < y->tv_usec) {
+    int nsec = (y->tv_usec - x->tv_usec) / 1000000 + 1;
+    y->tv_usec -= 1000000 * nsec;
+    y->tv_sec += nsec;
+  }
+  if (x->tv_usec - y->tv_usec > 1000000) {
+    int nsec = (x->tv_usec - y->tv_usec) / 1000000;
+    y->tv_usec += 1000000 * nsec;
+    y->tv_sec -= nsec;
+  }
+
+  /* Compute the time remaining to wait.
+     tv_usec is certainly positive. */
+  result->tv_sec = x->tv_sec - y->tv_sec;
+  result->tv_usec = x->tv_usec - y->tv_usec;
+
+  /* Return 1 if result is negative. */
+  return x->tv_sec < y->tv_sec;
+}
+
 void UsbCam::read_frame()
 {
   struct v4l2_buffer buf;
@@ -132,7 +157,35 @@ void UsbCam::read_frame()
       }
 
       // Get timestamp from V4L2 image buffer
-      m_image.stamp = usb_cam::utils::calc_img_timestamp(buf.timestamp, m_epoch_time_shift_us);
+      //m_image.stamp = usb_cam::utils::calc_img_timestamp(buf.timestamp, m_epoch_time_shift_us);
+      {
+	      timespec monostamp_ts;
+	      clock_gettime(CLOCK_MONOTONIC, &monostamp_ts);
+
+	      timeval monostamp_tv;
+	      monostamp_tv.tv_sec = monostamp_ts.tv_sec;
+	      monostamp_tv.tv_usec = monostamp_ts.tv_nsec / 1000;
+
+	      timeval diff_tv;
+	      timeval_subtract(&diff_tv, &monostamp_tv, &buf.timestamp);
+
+
+	      timespec realstamp_ts;
+	      clock_gettime(CLOCK_REALTIME, &realstamp_ts);
+	      long diff_nsec = diff_tv.tv_usec * 1000L;
+	      if (realstamp_ts.tv_nsec < diff_nsec) {
+		      realstamp_ts.tv_sec -= diff_tv.tv_sec + 1;
+		      realstamp_ts.tv_nsec = 1000000000L - (diff_nsec - realstamp_ts.tv_nsec);
+	      } else {
+		      realstamp_ts.tv_sec -= diff_tv.tv_sec;
+		      realstamp_ts.tv_nsec -= diff_nsec;
+	      }
+
+	      m_image.stamp = realstamp_ts;
+	      //printf("-%ld, %ld\n", monostamp_ts.tv_sec, monostamp_ts.tv_nsec);
+	      //printf("+%ld, %ld\n", buf.timestamp.tv_sec, buf.timestamp.tv_usec);
+	      //printf("%ld, %ld\n", diff_tv.tv_sec, diff_tv.tv_usec);
+      }
 
       assert(buf.index < m_number_of_buffers);
       process_image(m_buffers[buf.index].start, m_image.data, buf.bytesused);
